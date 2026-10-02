@@ -1,0 +1,26 @@
+{
+  "title": "Agent access register",
+  "user_settings": ["~/.claude/settings.json"],
+  "registry": "registry.json",
+  "tasks_roots": ["~/.claude/scheduled-tasks"],
+  "skills_root": "~/.claude/skills",
+  "policy": "policy/acceptable-use.json",
+  "out": "agent-access-register.html",
+  "credential_stores": [
+    {"id": "chat-bot", "label": "Chat bot token", "path": "~/.config/chat/.env"},
+    {"id": "github-cli", "label": "GitHub CLI login", "path": "~/.config/gh/hosts.yml"},
+    {"id": "ssh-keys", "label": "SSH private key", "path": "~/.ssh/id_ed25519"}
+  ],
+  "send_helpers": [
+    {"match": "discord_send.py", "channel": "discord", "credential": "chat-bot"},
+    {"match": "ntfy_send.py", "channel": "ntfy"}
+  ],
+  "mcp_servers": {
+    "00000000-0000-0000-0000-000000000000": "email"
+  },
+  "exceptions": {
+    "AUP-11": [
+      {"agent": "ship-weekly", "keys": ["publish:*"], "reason": "publishes the site on Sundays; approved by the owner on a named date"}
+    ]
+  }
+}

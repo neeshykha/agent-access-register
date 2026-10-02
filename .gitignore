@@ -1,0 +1,6 @@
+local/
+register.config.json
+*.live.html
+__pycache__/
+.DS_Store
+CLAUDE.md

@@ -1,0 +1,98 @@
+{
+  "title": "Acceptable-use policy for scheduled agents",
+  "status": "Draft 1, proposed 2026-10-02. Not adopted. The rules are the fleet owner's call.",
+  "preamble": "Plain rules for agents that run on a schedule with nobody watching. Each one is grouped under the NIST AI RMF function it serves most (Govern, Map, Measure, Manage); the mapping is loose and meant for orientation, not a compliance claim. A rule the register can test says so. A rule it can't test says that instead of pretending.",
+  "rules": [
+    {
+      "id": "AUP-01",
+      "rmf": "Govern",
+      "title": "Every agent is registered, with a named model and an explicit permission mode",
+      "text": "An agent that runs on a schedule has a row in the scheduler, a model line in its instructions, and a permission mode somebody chose. Nothing runs on a default nobody picked.",
+      "check": {"type": "fact", "facts": ["mode_unset", "model_unset"]}
+    },
+    {
+      "id": "AUP-02",
+      "rmf": "Govern",
+      "title": "No agent runs with permission checks off",
+      "text": "No scheduled agent uses bypassPermissions. Unattended is exactly when the checks matter.",
+      "check": {"type": "fact", "facts": ["mode_bypass"]}
+    },
+    {
+      "id": "AUP-03",
+      "rmf": "Govern",
+      "title": "Spending money is never delegated",
+      "text": "No agent buys, pays, books, or transfers. It can prepare a cart or a draft; a person places the order.",
+      "check": {"type": "process", "why": "nothing in permission config marks an action as a purchase."}
+    },
+    {
+      "id": "AUP-04",
+      "rmf": "Map",
+      "title": "An agent runs from its own project folder, and no credential store sits inside it",
+      "text": "The working directory is the boundary reads and edits are approved inside. Set to the home folder, that boundary is everything the account owns, credential files included. The same goes for any folder, or added directory, that holds a credential store.",
+      "check": {"type": "fact", "facts": ["home_as_cwd", "store_in_workdir"]}
+    },
+    {
+      "id": "AUP-05",
+      "rmf": "Map",
+      "title": "Work systems stay off the personal fleet",
+      "text": "Agents on a personal machine don't hold or use an employer's credentials: no Salesforce access and no work Slack. Work-credentialed automation runs where the employer's controls apply.",
+      "check": {"type": "forbid", "keys": ["data:salesforce:*", "cred:salesforce-cli", "send:slack"]}
+    },
+    {
+      "id": "AUP-06",
+      "rmf": "Measure",
+      "title": "No secrets in instructions or allow rules",
+      "text": "A token, key, or password never appears in a SKILL.md or a permission rule. Approving a one-off command bakes its literal text into the allowlist, so this gets checked, not assumed.",
+      "check": {"type": "fact", "facts": ["secret_literal"]}
+    },
+    {
+      "id": "AUP-07",
+      "rmf": "Measure",
+      "title": "The register is re-run when the fleet changes",
+      "text": "Run it when an agent is added or its instructions change, and after any credential incident. Each finding is fixed or excepted in writing, with a reason and a name.",
+      "check": {"type": "process", "why": "a habit, not a setting."}
+    },
+    {
+      "id": "AUP-08",
+      "rmf": "Manage",
+      "title": "Credential files are off the allowlist and on the deny list",
+      "text": "No allow rule names or covers a credential store, and every store has a deny rule. A deny rule stops the file tools and the shell readers the harness recognises; it does not stop a script that opens the file itself, which is why AUP-04 and AUP-09 exist.",
+      "check": {"type": "fact", "facts": ["credential_path_allowed", "credential_not_denied"]}
+    },
+    {
+      "id": "AUP-09",
+      "rmf": "Manage",
+      "title": "No wildcard interpreter in an allowlist",
+      "text": "A rule that allows an interpreter with a wildcard (python, bash, node, osascript) allows everything that interpreter can do. Allow the named script instead.",
+      "check": {"type": "fact", "facts": ["broad_exec_rule"]}
+    },
+    {
+      "id": "AUP-10",
+      "rmf": "Manage",
+      "title": "Agents message only through the approved channels",
+      "text": "Outbound goes through the Discord helper, the ntfy helper, or a mail draft a person sends. Sending mail directly, texting, posting to any other service, or a raw HTTP request with a body needs a named exception.",
+      "check": {"type": "allow_only", "prefixes": ["send:", "draft:"], "allowed": ["send:discord", "send:ntfy", "draft:*"]}
+    },
+    {
+      "id": "AUP-11",
+      "rmf": "Manage",
+      "title": "Publishing is a person's decision",
+      "text": "No agent pushes to a remote, opens or merges a pull request, or publishes a page unless it holds a named exception for that one destination.",
+      "check": {"type": "forbid", "keys": ["publish:*"]}
+    },
+    {
+      "id": "AUP-12",
+      "rmf": "Manage",
+      "title": "Deleting is a person's decision",
+      "text": "No agent deletes mail, records, or files in bulk. It can list what it would remove and wait for a yes. Removing one named scratch file it made itself is fine.",
+      "check": {"type": "forbid", "keys": ["delete:*"], "except_keys": ["delete:named-file"]}
+    },
+    {
+      "id": "AUP-13",
+      "rmf": "Manage",
+      "title": "Destructive shell commands pass a gate",
+      "text": "A PreToolUse hook on the shell tool is registered. The register confirms it's registered; it doesn't confirm it works, and a gate that has never been probed is an assumption.",
+      "check": {"type": "fact", "facts": ["gate_hook_missing"]}
+    }
+  ]
+}
