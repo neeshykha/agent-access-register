@@ -782,6 +782,18 @@ class DiffTests(FleetCase):
         page = ar.render_html(self.report, self.pol, self.result)
         self.assertIn("weekly recipe email", page)
 
+    def test_exception_can_target_one_rule_by_its_text(self):
+        # excepting the deliberate interpreter rule must not excuse the stale ones beside it
+        self.settings({"permissions": {"allow": ["Bash(python3 *)", "Bash(node -e ' *)"]}})
+        self.task("a")
+        self.policy([{"id": "R", "title": "interp", "text": "", "check": {"type": "fact", "facts": ["broad_exec_rule"]}}])
+        self.cfg["exceptions"] = {"R": [{"agent": "*", "keys": ["broad_exec_rule"], "match": "Bash(python3 *)",
+                                         "reason": "helper scripts run through python3"}]}
+        self.run_register()
+        by = {f["what"].split("allows ")[1]: f["excused"] for f in self.result["config_forbidden"]}
+        self.assertEqual(by, {"Bash(python3 *)": "helper scripts run through python3", "Bash(node -e ' *)": None})
+        self.assertEqual(self.code, 1)
+
     def test_inferred_only_findings_do_not_fail_the_run(self):
         self.task("told", body="Send it using mcp__slack__slack_send_message.\n")
         self.policy(self.RULES)

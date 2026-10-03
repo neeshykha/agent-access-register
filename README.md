@@ -43,9 +43,9 @@ Credential stores are checked for existence and for which rules reach them. None
 
 ## The policy
 
-[`policy/acceptable-use.md`](policy/acceptable-use.md) is thirteen plain rules, grouped loosely under the NIST AI RMF functions (Govern, Map, Measure, Manage). It's a draft, and the mapping is for orientation, not a compliance claim.
+[`policy/acceptable-use.md`](policy/acceptable-use.md) is twelve plain rules, grouped loosely under the NIST AI RMF functions (Govern, Map, Measure, Manage). I adopted it for my own fleet after dropping one rule from the first draft, and the mapping is for orientation, not a compliance claim.
 
-Eleven rules are checked by the register. Two can't be ("spending money is never delegated" and "re-run this when the fleet changes"), and the page lists them as unchecked instead of passing them.
+Ten rules are checked by the register. Two can't be ("spending money is never delegated" and "re-run this when the fleet changes"), and the page lists them as unchecked instead of passing them.
 
 The diff has three outputs:
 
@@ -90,7 +90,7 @@ The config names your settings files, the registry (a path or a glob; the newest
 python3 tests/test_register.py
 ```
 
-83 tests, all against real files in a throwaway home folder. Most of what's under test is how the register reads files it can't fully trust, and mocking the filesystem would only test the mock.
+84 tests, all against real files in a throwaway home folder. Most of what's under test is how the register reads files it can't fully trust, and mocking the filesystem would only test the mock.
 
 ## What a second model's review caught
 
@@ -118,4 +118,4 @@ The masking and negation logic passed their first tests and were wrong. A check 
 - **Rule semantics follow Claude Code's docs as of September 2026.** Path anchoring, wildcard handling, and which rules auto mode sets aside all come from there and weren't probed here.
 - **Secret detection is by shape.** It flags long mixed strings that turn out to be asset URLs, and it would miss a secret that looks like a word.
 
-Built with Claude Code. The policy is a draft and the fleet is my own.
+Built with Claude Code. The policy and the fleet are my own.

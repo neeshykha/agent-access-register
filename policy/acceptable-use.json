@@ -1,6 +1,6 @@
 {
   "title": "Acceptable-use policy for scheduled agents",
-  "status": "Draft 1, proposed 2026-10-02. Not adopted. The rules are the fleet owner's call.",
+  "status": "Adopted 2026-10-03 by the fleet owner, with edits to the 2026-10-02 draft. Rule AUP-05 (work systems) was considered and dropped, so the numbering skips it.",
   "preamble": "Plain rules for agents that run on a schedule with nobody watching. Each one is grouped under the NIST AI RMF function it serves most (Govern, Map, Measure, Manage); the mapping is loose and meant for orientation, not a compliance claim. A rule the register can test says so. A rule it can't test says that instead of pretending.",
   "rules": [
     {
@@ -30,13 +30,6 @@
       "title": "An agent runs from its own project folder, and no credential store sits inside it",
       "text": "The working directory is the boundary reads and edits are approved inside. Set to the home folder, that boundary is everything the account owns, credential files included. The same goes for any folder, or added directory, that holds a credential store.",
       "check": {"type": "fact", "facts": ["home_as_cwd", "store_in_workdir"]}
-    },
-    {
-      "id": "AUP-05",
-      "rmf": "Map",
-      "title": "Work systems stay off the personal fleet",
-      "text": "Agents on a personal machine don't hold or use an employer's credentials: no Salesforce access and no work Slack. Work-credentialed automation runs where the employer's controls apply.",
-      "check": {"type": "forbid", "keys": ["data:salesforce:*", "cred:salesforce-cli", "send:slack"]}
     },
     {
       "id": "AUP-06",

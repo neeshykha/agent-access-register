@@ -41,10 +41,10 @@ ul.plain{margin:6px 0 0;padding-left:20px}ul.plain li{margin:4px 0}
 footer{margin-top:36px;color:var(--muted);font-size:13px}
 </style></head><body><main>
 <h1>Agent access register</h1>
-<p class='sub'>Generated 2026-10-02 16:18:20 · 11 agents in the registry · policy: Acceptable-use policy for scheduled agents (Draft 1, proposed 2026-10-02. Not adopted. The rules are the fleet owner&#x27;s call.)</p>
+<p class='sub'>Generated 2026-10-03 17:07:04 · 11 agents in the registry · policy: Acceptable-use policy for scheduled agents (Adopted 2026-10-03 by the fleet owner, with edits to the 2026-10-02 draft. Rule AUP-05 (work systems) was considered and dropped, so the numbering skips it.)</p>
 <div class='banner'><b>Demo fleet.</b> Synthetic agents, settings, and scripts built on disk by <code>demo/build_demo.py</code>. Every row is the register's real output against those files. The two planted secrets are fake; the page shows where they sit and never what they say.</div>
 <div class='banner bad'><b>This register is incomplete.</b> Something it needed couldn't be read, so a blank below may mean unread, not none.<ul class='plain'><li>manual-backfill: SKILL.md is missing</li></ul></div>
-<div class='banner bad'><b>Config allows what policy forbids under 10 rules.</b> 25 instances, listed first below.</div>
+<div class='banner bad'><b>Config allows what policy forbids under 9 rules.</b> 23 instances, listed first below.</div>
 <h2>Config allows, policy forbids</h2>
 <p class='muted small'>Declared access: it's in a settings file, a task approval, or the registry. Nothing here is a guess.</p>
 <div class='find '><h3><span class='tag t-rule'>AUP-01</span><span class='tag t-rmf'>Govern</span>Every agent is registered, with a named model and an explicit permission mode</h3>
@@ -58,11 +58,6 @@ footer{margin-top:36px;color:var(--muted);font-size:13px}
 <div class='find '><h3><span class='tag t-rule'>AUP-04</span><span class='tag t-rmf'>Map</span>An agent runs from its own project folder, and no credential store sits inside it</h3>
 <ul>
 <li><b>9 agents.</b> working directory is the home folder <details><summary>which</summary>daily-garden-check, escalated-case-digest, habit-nagger, inbox-junk-sweep, manual-backfill, morning-brief, old-rainfall-report, pickup-reminder, weekly-fleet-review</details></li>
-</ul></div>
-<div class='find '><h3><span class='tag t-rule'>AUP-05</span><span class='tag t-rmf'>Map</span>Work systems stay off the personal fleet</h3>
-<ul>
-<li><b>All agents.</b> data:salesforce:any: Bash(sf *) (sf command not limited to reads)</li>
-<li><b>All agents.</b> cred:salesforce-cli: Bash(sf *) (sf uses its stored login)</li>
 </ul></div>
 <div class='find '><h3><span class='tag t-rule'>AUP-06</span><span class='tag t-rmf'>Measure</span>No secrets in instructions or allow rules</h3>
 <ul>
@@ -95,10 +90,6 @@ footer{margin-top:36px;color:var(--muted);font-size:13px}
 </ul></div>
 <h2>Instructions ask for what policy forbids</h2>
 <p class='muted small'>Inferred from each task's SKILL.md and the scripts it runs. Whether config would let these through isn't known for agents in auto mode, so they're kept apart from the list above.</p>
-<div class='find inst'><h3><span class='tag t-rule'>AUP-05</span><span class='tag t-rmf'>Map</span>Work systems stay off the personal fleet</h3>
-<ul>
-<li><b>escalated-case-digest.</b> cred:salesforce-cli: sf uses its stored login; data:salesforce:read: sf read command; send:slack: tool slack__slack_send_message <span class='muted small'>(SKILL.md line 9)</span></li>
-</ul></div>
 <div class='find inst'><h3><span class='tag t-rule'>AUP-10</span><span class='tag t-rmf'>Manage</span>Agents message only through the approved channels</h3>
 <ul>
 <li><b>escalated-case-digest.</b> send:slack: tool slack__slack_send_message <span class='muted small'>(SKILL.md line 12)</span></li>
@@ -114,8 +105,8 @@ footer{margin-top:36px;color:var(--muted);font-size:13px}
 <div class='tile'><b>10</b><span>enabled</span></div>
 <div class='tile'><b>7</b><span>can send or publish (declared or inferred)</span></div>
 <div class='tile'><b>5</b><span>credential stores on disk</span></div>
-<div class='tile'><b>5</b><span>instructed, policy forbids</span></div>
-<div class='tile'><b>14</b><span>kinds of access policy is silent on</span></div>
+<div class='tile'><b>2</b><span>instructed, policy forbids</span></div>
+<div class='tile'><b>16</b><span>kinds of access policy is silent on</span></div>
 <div class='tile'><b class='small' style='font-size:15px'>auto 9 · bypassPermissions 1 · unset 1</b><span>permission modes</span></div>
 </div>
 <h2>Shared config: what every agent under it inherits</h2>
@@ -154,6 +145,7 @@ footer{margin-top:36px;color:var(--muted);font-size:13px}
 <tr><td><span class='k'>write:~/Trackers</span></td><td><span class='tag t-declared'>declared</span><span class='tag t-inferred'>inferred</span></td><td class='small'>shared config: ~/.claude/settings.json; 2 agents: daily-garden-check, inbox-junk-sweep</td></tr>
 <tr><td><span class='k'>read:email</span></td><td><span class='tag t-declared'>declared</span><span class='tag t-inferred'>inferred</span></td><td class='small'>shared config: ~/.claude/settings.json; 1 agent: inbox-junk-sweep</td></tr>
 <tr><td><span class='k'>write:~/projects</span></td><td><span class='tag t-declared'>declared</span><span class='tag t-inferred'>inferred</span></td><td class='small'>shared config: ~/projects/jobs/.claude/settings.json; 1 agent: daily-job-pipeline</td></tr>
+<tr><td><span class='k'>data:salesforce:any</span></td><td><span class='tag t-declared'>declared</span></td><td class='small'>shared config: ~/.claude/settings.json</td></tr>
 <tr><td><span class='k'>exec:osascript</span></td><td><span class='tag t-declared'>declared</span></td><td class='small'>shared config: ~/.claude/settings.local.json</td></tr>
 <tr><td><span class='k'>read:~/.claude</span></td><td><span class='tag t-declared'>declared</span></td><td class='small'>shared config: ~/.claude/settings.json</td></tr>
 <tr><td><span class='k'>read:~/.config</span></td><td><span class='tag t-declared'>declared</span></td><td class='small'>shared config: ~/.claude/settings.json</td></tr>
@@ -162,6 +154,7 @@ footer{margin-top:36px;color:var(--muted);font-size:13px}
 <tr><td><span class='k'>write:~/.claude</span></td><td><span class='tag t-declared'>declared</span></td><td class='small'>shared config: ~/.claude/settings.json</td></tr>
 <tr><td><span class='k'>net:(web hosts fetched from the shell)</span></td><td><span class='tag t-inferred'>inferred</span></td><td class='small'>2 agents: daily-garden-check, daily-job-pipeline</td></tr>
 <tr><td><span class='k'>write:~/Downloads</span></td><td><span class='tag t-declared'>declared</span><span class='tag t-inferred'>inferred</span></td><td class='small'>2 agents: morning-brief, old-rainfall-report</td></tr>
+<tr><td><span class='k'>data:salesforce:read</span></td><td><span class='tag t-inferred'>inferred</span></td><td class='small'>1 agent: escalated-case-digest</td></tr>
 <tr><td><span class='k'>modify:email</span></td><td><span class='tag t-declared'>declared</span></td><td class='small'>1 agent: inbox-junk-sweep</td></tr>
 <tr><td><span class='k'>read:calendar</span></td><td><span class='tag t-declared'>declared</span><span class='tag t-inferred'>inferred</span></td><td class='small'>1 agent: morning-brief</td></tr>
 <tr><td><span class='k'>read:~/Trackers</span></td><td><span class='tag t-inferred'>inferred</span></td><td class='small'>1 agent: weekly-fleet-review</td></tr>
@@ -175,7 +168,6 @@ footer{margin-top:36px;color:var(--muted);font-size:13px}
 <tr><td><b>AUP-02</b><br>No agent runs with permission checks off</td><td>Govern</td><td>No scheduled agent uses bypassPermissions. Unattended is exactly when the checks matter.</td><td><span class='tag t-rule'>findings</span></td></tr>
 <tr><td><b>AUP-03</b><br>Spending money is never delegated</td><td>Govern</td><td>No agent buys, pays, books, or transfers. It can prepare a cart or a draft; a person places the order.</td><td><span class='tag t-off'>can't check</span><br><span class='muted small'>nothing in permission config marks an action as a purchase.</span></td></tr>
 <tr><td><b>AUP-04</b><br>An agent runs from its own project folder, and no credential store sits inside it</td><td>Map</td><td>The working directory is the boundary reads and edits are approved inside. Set to the home folder, that boundary is everything the account owns, credential files included. The same goes for any folder, or added directory, that holds a credential store.</td><td><span class='tag t-rule'>findings</span></td></tr>
-<tr><td><b>AUP-05</b><br>Work systems stay off the personal fleet</td><td>Map</td><td>Agents on a personal machine don&#x27;t hold or use an employer&#x27;s credentials: no Salesforce access and no work Slack. Work-credentialed automation runs where the employer&#x27;s controls apply.</td><td><span class='tag t-rule'>findings</span></td></tr>
 <tr><td><b>AUP-06</b><br>No secrets in instructions or allow rules</td><td>Measure</td><td>A token, key, or password never appears in a SKILL.md or a permission rule. Approving a one-off command bakes its literal text into the allowlist, so this gets checked, not assumed.</td><td><span class='tag t-rule'>findings</span></td></tr>
 <tr><td><b>AUP-07</b><br>The register is re-run when the fleet changes</td><td>Measure</td><td>Run it when an agent is added or its instructions change, and after any credential incident. Each finding is fixed or excepted in writing, with a reason and a name.</td><td><span class='tag t-off'>can't check</span><br><span class='muted small'>a habit, not a setting.</span></td></tr>
 <tr><td><b>AUP-08</b><br>Credential files are off the allowlist and on the deny list</td><td>Manage</td><td>No allow rule names or covers a credential store, and every store has a deny rule. A deny rule stops the file tools and the shell readers the harness recognises; it does not stop a script that opens the file itself, which is why AUP-04 and AUP-09 exist.</td><td><span class='tag t-rule'>findings</span></td></tr>

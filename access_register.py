@@ -1512,16 +1512,23 @@ def diff(report, policy, exceptions):
     total = len(agents)
     scopes = [s for s in report["scopes"] if s["status"] == "read"]
 
-    def excepted(rule_id, agent_id, key):
+    def excepted(rule_id, agent_id, key, what):
+        """The reason on file if an exception covers this finding, else None.
+
+        An exception names an agent (or "*"), the keys it covers, and optionally
+        `match`: text the finding must contain. Without `match`, excepting one
+        wildcard-interpreter rule would excuse every one of them.
+        """
         for ex in (exceptions.get(rule_id) or []):
-            if ex.get("agent") in (agent_id, "*") and key_matches(key, ex.get("keys") or ["*"]):
+            if ex.get("agent") in (agent_id, "*") and key_matches(key, ex.get("keys") or ["*"]) \
+                    and (not ex.get("match") or ex["match"] in what):
                 return ex.get("reason") or "excepted, no reason given"
         return None
 
-    def add(target, rule, who, what, source, key=None, shared=None, excused=None):
+    def add(target, rule, who, what, source, key=None, shared=None, agent=None, name=None):
         target.append({"rule": rule["id"], "title": rule["title"], "rmf": rule.get("rmf"),
                        "who": who, "what": what, "source": source, "key": key, "shared": shared,
-                       "excused": excused})
+                       "excused": excepted(rule["id"], agent if agent is not None else who, name or key, what)})
 
     for rule in policy.get("rules", []):
         check = rule.get("check") or {"type": "process"}
@@ -1535,7 +1542,7 @@ def diff(report, policy, exceptions):
                 covered.extend(FACT_COVERS.get(name, []))
                 for inst in report["facts"].get(name, []):
                     add(config_forbidden, rule, inst["scope"], inst["text"], "config", shared=inst.get("shared"),
-                        excused=excepted(rule["id"], inst["scope"], name))
+                        name=name)
         elif kind in ("forbid", "allow_only"):
             if kind == "forbid":
                 patterns = check["keys"]
@@ -1553,16 +1560,16 @@ def diff(report, policy, exceptions):
                     if bad(c["key"]):
                         more = " (and %d more rule%s)" % (c["more"], "" if c["more"] == 1 else "s") if c.get("more") else ""
                         add(config_forbidden, rule, sc_who, "%s: %s%s" % (c["key"], c["detail"], more), sc["id"],
-                            key=c["key"], shared=sc["id"], excused=excepted(rule["id"], "*", c["key"]))
+                            key=c["key"], shared=sc["id"], agent="*")
             for a in agents:
                 for c in a["declared"]:
                     if bad(c["key"]) and not c.get("derived"):
                         add(config_forbidden, rule, a["id"], "%s: %s" % (c["key"], c["detail"]), c["source"],
-                            key=c["key"], excused=excepted(rule["id"], a["id"], c["key"]))
+                            key=c["key"])
                 for c in a["inferred"]:
                     if bad(c["key"]):
                         add(instructed_forbidden, rule, a["id"], "%s: %s" % (c["key"], c["detail"]), c["source"],
-                            key=c["key"], excused=excepted(rule["id"], a["id"], c["key"]))
+                            key=c["key"])
         else:
             unchecked.append({"rule": rule["id"], "title": rule["title"], "rmf": rule.get("rmf"),
                               "why": "check type %r isn't one this tool knows" % kind})
