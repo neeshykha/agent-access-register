@@ -1,6 +1,6 @@
 # agent-access-register
 
-A script I run on demand that answers one question about my scheduled Claude Code agents: **what is each one allowed to touch?** It reads the permission config they actually run under, reads each agent's instructions, and diffs the result against a written acceptable-use policy.
+A script I run on demand that answers one question about my scheduled Claude Code agents: **what is each one allowed to touch?** It reads the permission config they run under, reads each agent's instructions, and diffs both against a written acceptable-use policy.
 
 **[See the demo page →](https://neeshykha.github.io/agent-access-register/)** (a synthetic fleet, built on disk by `demo/build_demo.py`)
 
@@ -8,16 +8,16 @@ This is the third of a set. [skill-regression-harness](https://github.com/neeshy
 
 ## Why this exists
 
-I run a few dozen agents on a schedule with nobody watching: a job pipeline, health and garden check-ins, digests, a weekly fleet review. In September I found a live bot token baked into an allowlist. Approving a one-off command had saved its literal text, secret included, as a permanent rule. I cleaned that up by hand and realized I couldn't answer the obvious follow-up: which of these agents can read that token file at all?
+I run a few dozen agents on a schedule with nobody watching: a job pipeline, health and garden check-ins, digests, a weekly fleet review. In September I found a live bot token baked into an allowlist. Approving a one-off command had saved its literal text, secret included, as a permanent rule. I cleaned that up by hand and then couldn't answer the obvious follow-up: which of these agents can read that token file at all?
 
-I assumed the answer lived in config, one row per agent. It doesn't, and that turned out to be the finding.
+I assumed the answer lived in config, one row per agent. It doesn't. That turned out to be the finding.
 
 ## What the first run against my real fleet found
 
-1. **Permissions aren't per-agent.** Every agent inherits one shared allowlist. There are zero deny rules and zero ask rules in any settings file. The "declared" column reads nearly the same on every row, so most of what tells two agents apart is inferred from their instructions.
-2. **The working directory is the real boundary, and mine was the whole home folder.** 51 of 55 agents run from `~`. Reads inside the working directory need no approval in any permission mode, so every credential file under home is in reach of every one of them without a single rule saying so.
+1. **Permissions aren't per-agent.** Every agent inherits one shared allowlist. There are zero deny rules and zero ask rules in any settings file. The "declared" column reads nearly the same on every row, so most of what tells two agents apart has to be inferred from their instructions.
+2. **The working directory is the real boundary, and mine was the whole home folder.** 51 of 55 agents run from `~`. Reads inside the working directory need no approval in any permission mode, so every credential file under home is in reach of every one of them, and no rule anywhere says so.
 3. **In auto mode the allowlist is a floor, not a ceiling.** 50 agents run in auto, where anything the allowlist doesn't name goes to a classifier. The register can't read that classifier, and the page says so instead of pretending the allowlist is the limit.
-4. **The cleanup missed a place.** There's a per-agent layer I didn't know about when I pitched this: every "always allow" click is saved against the routine in the scheduler's registry. Seven of those saved approvals still carried what look like the same token and keys I thought I'd removed three weeks earlier (the register reports shape and position, never the value, so "look like" is as far as it goes). I'd cleaned the settings file and never looked there.
+4. **The cleanup missed a place.** There's a per-agent layer I didn't know about when I pitched this: every "always allow" click is saved against the routine in the scheduler's registry. Seven of those saved approvals still carried what look like the same token and keys I thought I'd removed three weeks earlier. The register reports shape and position, never the value, so "look like" is as far as it goes. I'd cleaned the settings file and never looked there.
 5. **Five agents had no permission mode set**, and five had no model line. All ten were created after the last time I set modes in bulk.
 
 None of that needed a clever scan. It needed somebody to read four files side by side.
@@ -31,7 +31,7 @@ None of that needed a clever scan. It needed somebody to read four files side by
 | Each agent's `SKILL.md` | what it's told to read, write, send, and run | **inferred** |
 | Scripts and skills that `SKILL.md` names | one hop, no further | **inferred** |
 
-**Declared** means it's in permission config. **Inferred** means it was read out of free text and can be wrong in both directions. Every row on the page carries one or the other, and the two never share a findings list: "config allows what policy forbids" is declared-only, and "instructions ask for what policy forbids" sits below it.
+**Declared** means it's in permission config. **Inferred** means it was read out of free text and can be wrong in both directions. Every row on the page carries one label or the other, and the two never share a findings list: "config allows what policy forbids" is declared-only, and "instructions ask for what policy forbids" sits below it.
 
 Credential stores are checked for existence and for which rules reach them. None is ever opened.
 
@@ -43,7 +43,7 @@ Credential stores are checked for existence and for which rules reach them. None
 
 ## The policy
 
-[`policy/acceptable-use.md`](policy/acceptable-use.md) is thirteen plain rules, grouped loosely under the NIST AI RMF functions (Govern, Map, Measure, Manage). It's a draft. The mapping is for orientation, not a compliance claim.
+[`policy/acceptable-use.md`](policy/acceptable-use.md) is thirteen plain rules, grouped loosely under the NIST AI RMF functions (Govern, Map, Measure, Manage). It's a draft, and the mapping is for orientation, not a compliance claim.
 
 Eleven rules are checked by the register. Two can't be ("spending money is never delegated" and "re-run this when the fleet changes"), and the page lists them as unchecked instead of passing them.
 
@@ -94,7 +94,7 @@ python3 tests/test_register.py
 
 ## What a second model's review caught
 
-I had a stronger model review the parsing and diff logic before I trusted any of it, since none of this can be checked by looking. It found sixteen defects. Five mattered:
+None of this can be checked by looking, so I had a stronger model review the parsing and diff logic before I trusted any of it. It found sixteen defects. Five mattered:
 
 - **Masking let real shapes through.** A token with a `/` in it, a `password=` value with no digits, and anything under sixteen characters all printed verbatim.
 - **Negation erred in the dangerous direction.** "Don't forget to post to Discord" read as a prohibition, which turned a sending agent into a non-sender.
