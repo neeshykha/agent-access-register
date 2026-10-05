@@ -8,7 +8,7 @@ This is the third of a set. [skill-regression-harness](https://github.com/neeshy
 
 ## Why this exists
 
-I run a few dozen agents on a schedule with nobody watching: a job pipeline, health and garden check-ins, digests, a weekly fleet review. In September I found a live bot token baked into an allowlist. Approving a one-off command had saved its literal text, secret included, as a permanent rule. I cleaned that up by hand and then couldn't answer the obvious follow-up: which of these agents can read that token file at all?
+I run a few dozen agents on a schedule with nobody watching: a job pipeline, health and garden check-ins, digests, a weekly fleet review. In September I found a bot token baked into an allowlist. Approving a one-off command had saved its literal text, secret included, as a permanent rule. I cleaned that up by hand and then couldn't answer the obvious follow-up: which of these agents can read that token file at all?
 
 I assumed the answer lived in config, one row per agent. It doesn't. That turned out to be the finding.
 
@@ -17,7 +17,7 @@ I assumed the answer lived in config, one row per agent. It doesn't. That turned
 1. **Permissions aren't per-agent.** Every agent inherits one shared allowlist. There are zero deny rules and zero ask rules in any settings file. The "declared" column reads nearly the same on every row, so most of what tells two agents apart has to be inferred from their instructions.
 2. **The working directory is the real boundary, and mine was the whole home folder.** 51 of 55 agents run from `~`. Reads inside the working directory need no approval in any permission mode, so every credential file under home is in reach of every one of them, and no rule anywhere says so.
 3. **In auto mode the allowlist is a floor, not a ceiling.** 50 agents run in auto, where anything the allowlist doesn't name goes to a classifier. The register can't read that classifier, and the page says so instead of pretending the allowlist is the limit.
-4. **The cleanup missed a place.** There's a per-agent layer I didn't know about when I pitched this: every "always allow" click is saved against the routine in the scheduler's registry. Seven of those saved approvals still carried what look like the same token and keys I thought I'd removed three weeks earlier. The register reports shape and position, never the value, so "look like" is as far as it goes. I'd cleaned the settings file and never looked there.
+4. **The cleanup missed a place.** There's a per-agent layer I didn't know about when I pitched this: every "always allow" click is also saved against the routine it was made in. Seven of those saved approvals carried secret-shaped strings in the same positions as the ones I'd removed from the settings file three weeks earlier. The register reports shape and position, never the value, so it can't say whether they were the same strings. I'd cleaned one file and never looked in the other.
 5. **Five agents had no permission mode set**, and five had no model line. All ten were created after the last time I set modes in bulk.
 
 None of that needed a clever scan. It needed somebody to read four files side by side.
