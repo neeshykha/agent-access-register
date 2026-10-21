@@ -11,9 +11,11 @@ and isn't. The secrets are fake strings planted to prove they never come back ou
 
 import json
 import os
+import re
 import shutil
 import sys
 import tempfile
+import time
 import unittest
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -22,6 +24,7 @@ sys.path.insert(0, os.path.join(REPO, "demo"))
 
 import access_register as ar  # noqa: E402
 import build_demo  # noqa: E402
+import jit_pass  # noqa: E402
 from access_register import (DECLARED, INFERRED, Classifier, Env, anchor, classify_mcp, is_broad_exec,
                              negated_at, parse_rule, pattern_covers, safe, scan_instructions,
                              scan_script, secret_spans)
@@ -829,6 +832,328 @@ class DiffTests(FleetCase):
         self.assertTrue(any("nothing was diffed" in e for e in self.report["errors"]))
 
 
+RULE = {"decision": "accept", "source": "config", "reasonType": "rule"}
+SUBS = {"decision": "accept", "source": "config", "reasonType": "subcommandResults"}
+PERM = {"decision": "accept", "source": "user_permanent", "reasonType": "rule"}
+CLASSIFIER = {"decision": "accept", "source": "config", "reasonType": "classifier"}
+TEMP = {"decision": "accept", "source": "user_temporary"}
+HOOK = {"decision": "reject", "source": "hook", "reasonType": "hook"}
+
+
+class JitCase(FleetCase):
+    """A fleet plus run records: session files and the transcripts they point at."""
+
+    def setUp(self):
+        super().setUp()
+        self.cfg["runs"] = {"sessions": "~/sessions/*.json", "transcripts_root": "~/.claude/projects",
+                            "window_days": 30, "min_runs": 3}
+        self.nrun = 0
+        self.now = time.time() * 1000
+
+    def run_rec(self, tid, calls, mode="auto", cwd=None, days_ago=1, grants=None, reasons=None, transcript=True):
+        """One scheduled run. Each call is (tool, input) or (tool, input, decision) or (tool, input, decision, error text)."""
+        self.nrun += 1
+        sid = "0000%04d-1111-2222-3333-444444444444" % self.nrun
+        cwd = cwd or self.home
+        rec = {"sessionId": "local_r%d" % self.nrun, "cliSessionId": sid, "cwd": cwd, "permissionMode": mode,
+               "createdAt": self.now - days_ago * 86400000 - self.nrun * 1000, "scheduledTaskId": tid}
+        if grants:
+            rec["sessionPermissionUpdates"] = grants
+        if reasons:
+            rec["alwaysAllowedReasons"] = reasons
+        write(os.path.join(self.home, "sessions", "local_r%d.json" % self.nrun), json.dumps(rec))
+        if transcript:
+            lines = []
+            for i, c in enumerate(calls):
+                tu = "toolu_%d_%d" % (self.nrun, i)
+                lines.append({"type": "assistant", "message": {"content": [
+                    {"type": "tool_use", "id": tu, "name": c[0], "input": c[1]}]}})
+                err = c[3] if len(c) > 3 else None
+                u = {"type": "user", "message": {"content": [
+                    {"type": "tool_result", "tool_use_id": tu, "content": err or "done", "is_error": bool(err)}]}}
+                if len(c) > 2 and c[2]:
+                    u["permissionDecision"] = c[2]
+                lines.append(u)
+            write(os.path.join(self.home, ".claude", "projects", re.sub(r"[^A-Za-z0-9]", "-", cwd), sid + ".jsonl"),
+                  "\n".join(json.dumps(x) for x in lines) + "\n")
+        return sid
+
+    def jit(self):
+        self.run_register()
+        self.j = self.report.get("jit")
+        self.ja = {a["id"]: a for a in self.j["agents"]} if self.j else {}
+        return self.j
+
+    @staticmethod
+    def shown(items):
+        return [g["shown"] for g in items]
+
+
+class JitTests(JitCase):
+    def test_every_run_and_some_runs(self):
+        self.settings({"permissions": {"allow": ["Bash(python3 ~/bin/send.py *)", "Bash(sf *)", "Bash(npm *)"]}})
+        self.task("nag")
+        send = ("Bash", {"command": "python3 ~/bin/send.py payload.json"}, RULE)
+        self.run_rec("nag", [send])
+        self.run_rec("nag", [send, ("Bash", {"command": "sf data query -q 'SELECT Id FROM Case'"}, RULE)])
+        self.run_rec("nag", [send])
+        self.jit()
+        a = self.ja["nag"]
+        self.assertEqual(a["runs"], 3)
+        self.assertEqual(self.shown(a["every"]), ["Bash(python3 ~/bin/send.py *)"])
+        self.assertEqual([(g["shown"], g["runs"]) for g in a["some"]], [("Bash(sf *)", 1)])
+        self.assertEqual(a["unused_shared"], 1)
+        self.assertFalse(a["too_few"])
+        self.assertEqual(self.j["totals"]["shared_rules_used"], 2)
+        self.assertEqual(self.j["totals"]["shared_rules_every"], 1)
+
+    def test_too_few_runs_are_not_sorted(self):
+        self.settings({"permissions": {"allow": ["Bash(python3 ~/bin/send.py *)"]}})
+        self.task("weekly")
+        self.run_rec("weekly", [("Bash", {"command": "python3 ~/bin/send.py x"}, RULE)])
+        self.jit()
+        self.assertTrue(self.ja["weekly"]["too_few"])
+        self.assertIn("too few runs", ar.render_html(self.report, self.pol, self.result))
+
+    def test_missing_transcript_is_unknown_not_empty(self):
+        self.settings({"permissions": {"allow": ["Bash(python3 ~/bin/send.py *)"]}})
+        self.task("nag")
+        for _ in range(3):
+            self.run_rec("nag", [("Bash", {"command": "python3 ~/bin/send.py x"}, RULE)])
+        self.run_rec("nag", [], transcript=False)
+        self.jit()
+        a = self.ja["nag"]
+        self.assertEqual((a["runs"], a["runs_missing"]), (3, 1))
+        self.assertEqual(self.shown(a["every"]), ["Bash(python3 ~/bin/send.py *)"])   # over the runs that can be read
+        self.assertTrue(any("no transcript" in u for u in self.j["unknowns"]))
+
+    def test_no_run_records_is_exit_2(self):
+        self.task("nag")
+        self.jit()
+        self.assertEqual(self.code, 2)
+        self.assertTrue(any("just-in-time pass" in e and "unknown, not none" in e for e in self.report["errors"]))
+
+    def test_run_with_no_calls_is_left_out_of_every(self):
+        self.settings({"permissions": {"allow": ["Bash(python3 ~/bin/send.py *)"]}})
+        self.task("nag")
+        for _ in range(3):
+            self.run_rec("nag", [("Bash", {"command": "python3 ~/bin/send.py x"}, RULE)])
+        self.run_rec("nag", [])
+        self.jit()
+        a = self.ja["nag"]
+        self.assertEqual((a["runs"], a["runs_empty"]), (3, 1))
+        self.assertEqual(len(a["every"]), 1)
+
+    def test_runs_outside_the_window_or_registry_are_skipped(self):
+        self.settings({"permissions": {"allow": ["Bash(python3 ~/bin/send.py *)"]}})
+        self.task("nag")
+        self.run_rec("nag", [("Bash", {"command": "python3 ~/bin/send.py x"}, RULE)], days_ago=45)
+        self.run_rec("deleted-task", [("Bash", {"command": "python3 ~/bin/send.py x"}, RULE)])
+        self.jit()
+        self.assertEqual(self.ja["nag"]["runs"], 0)
+        self.assertEqual(self.j["counts"]["unregistered"], {"deleted-task": 1})
+        self.assertTrue(any("deleted-task" in u for u in self.j["unknowns"]))
+
+    def test_classifier_session_grants_and_blocks_credit_nothing(self):
+        self.settings({"permissions": {"allow": ["Bash(curl *)"]}})
+        self.task("scan")
+        self.run_rec("scan", [("Bash", {"command": "curl -s https://example.com"}, CLASSIFIER),
+                              ("Bash", {"command": "curl -s https://example.org"}, TEMP),
+                              ("Bash", {"command": "curl -s https://example.net && rm -rf x"}, HOOK,
+                               "PreToolUse:Bash hook error: Blocked by project policy")])
+        self.jit()
+        a = self.ja["scan"]
+        self.assertEqual(a["status"], {"classifier": 1, "this_run": 1, "denied": 1})
+        self.assertEqual(a["denied"], {"hook": 1})
+        self.assertEqual(a["every"] + a["some"], [])
+
+    def test_block_without_a_decision_is_read_from_the_message(self):
+        self.task("old")
+        self.run_rec("old", [("Bash", {"command": "ls x | wc -l"}, None,
+                              "Blocked by project policy: command contains pipe."),
+                             ("Bash", {"command": "make"}, RULE, "Exit code 2: this target requires approval")])
+        self.jit()
+        a = self.ja["old"]
+        self.assertEqual(a["denied"], {"hook": 1})
+        self.assertNotIn("standing", a["status"])          # make matched no rule; an allowed call that failed isn't a block
+        self.assertEqual(a["status"].get("unmatched"), 1)
+
+    def test_compound_command_is_checked_piece_by_piece(self):
+        self.settings({"permissions": {"allow": ["Bash(python3 ~/bin/send.py *)", "Bash(grep *)"]}})
+        self.task("nag")
+        self.run_rec("nag", [("Bash", {"command": "cd ~/x && FOO=1 timeout 60 python3 ~/bin/send.py a | grep ok"},
+                              SUBS)])
+        self.jit()
+        a = self.ja["nag"]
+        # cd and grep are read-only built-ins: they run with no rule, so Bash(grep *) gets no credit
+        self.assertEqual(self.shown(a["every"] + a["some"]), ["Bash(python3 ~/bin/send.py *)"])
+        self.assertEqual(self.j["totals"]["check"], {"agree": 1, "family": 0, "missing": 0})
+
+    def test_narrowest_rule_gets_the_credit_and_shows_what_it_covered(self):
+        self.settings({"permissions": {"allow": ["Bash(python3 *)", "Bash(python3 ~/bin/send.py *)",
+                                                 "Bash(python3:*)"]}})
+        self.task("nag")
+        self.run_rec("nag", [("Bash", {"command": "python3 ~/bin/send.py a"}, RULE),
+                             ("Bash", {"command": "python3 ~/bin/other.py --x 1"}, RULE)])
+        self.jit()
+        a = self.ja["nag"]
+        got = {g["shown"]: g for g in a["every"] + a["some"]}
+        self.assertIn("Bash(python3 ~/bin/send.py *)", got)
+        # the two equivalent wildcards tie on other.py, and both are credited
+        self.assertIn("Bash(python3 *)", got)
+        self.assertIn("Bash(python3:*)", got)
+        self.assertEqual([c["what"] for c in got["Bash(python3 *)"]["covered"]], ["python3 ~/bin/other.py"])
+        self.assertEqual([c["what"] for c in got["Bash(python3 ~/bin/send.py *)"]["covered"]], ["python3 ~/bin/send.py"])
+
+    def test_working_directory_reads_and_protected_edits(self):
+        self.task("health")
+        self.run_rec("health", [("Read", {"file_path": os.path.join(self.home, "Trackers/log.csv")}),
+                                ("Edit", {"file_path": os.path.join(self.home, "Trackers/log.csv")},
+                                 {"decision": "accept", "source": "config", "reasonType": "mode"}),
+                                ("Edit", {"file_path": os.path.join(self.home, ".claude/x/SKILL.md")})])
+        self.jit()
+        a = self.ja["health"]
+        got = {g["shown"]: g for g in a["every"] + a["some"]}
+        self.assertEqual(sorted(got), ["edits inside ~", "reads inside ~"])
+        self.assertEqual([c["what"] for c in got["reads inside ~"]["covered"]], ["~/Trackers"])
+        # .claude is protected: auto mode doesn't edit there on the working directory's say-so
+        self.assertEqual(a["status"].get("unmatched"), 1)
+        self.assertTrue(all(self.home not in json.dumps(x) for x in self.j["agents"]))
+
+    def test_write_path_rules_match_nothing_and_edit_rules_cover_reads(self):
+        out = os.path.join(self.home, "out")
+        self.settings({"permissions": {"allow": ["Write(~/out/**)", "Edit(~/notes/**)"]}})
+        self.task("w", cwd=os.path.join(self.home, "proj"))
+        self.run_rec("w", [("Write", {"file_path": os.path.join(out, "a.txt")}, None),
+                           ("Read", {"file_path": os.path.join(self.home, "notes/n.md")}, None)],
+                     cwd=os.path.join(self.home, "proj"))
+        self.jit()
+        a = self.ja["w"]
+        self.assertEqual(self.shown(a["every"] + a["some"]), ["Edit(~/notes/**)"])
+        self.assertEqual(a["status"].get("unmatched"), 1)
+
+    def test_webfetch_domains_follow_the_docs(self):
+        self.settings({"permissions": {"allow": ["WebFetch(domain:example.com)", "WebFetch(domain:*.example.org)"]}})
+        self.task("web")
+        self.run_rec("web", [("WebFetch", {"url": "https://api.example.com/x"}),
+                             ("WebFetch", {"url": "https://example.org/"}),
+                             ("WebFetch", {"url": "https://news.example.org/a"}),
+                             ("WebFetch", {"url": "https://example.com/"})])
+        self.jit()
+        a = self.ja["web"]
+        self.assertEqual(sorted(self.shown(a["every"])), ["WebFetch(domain:*.example.org)", "WebFetch(domain:example.com)"])
+        self.assertEqual(a["status"].get("unmatched"), 2)
+
+    def test_mcp_server_rules_and_skill_names(self):
+        self.settings({"permissions": {"allow": ["mcp__mail", "Skill(report)", "mcp__cal__list_events"]}})
+        self.task("m")
+        self.run_rec("m", [("mcp__mail__search_threads", {}), ("Skill", {"skill": "reporter"}),
+                           ("Skill", {"skill": "report:weekly"}), ("mcp__cal__create_event", {})])
+        self.jit()
+        a = self.ja["m"]
+        self.assertEqual(sorted(self.shown(a["every"])), ["Skill(report)", "mcp__mail"])
+        self.assertEqual(a["status"].get("unmatched"), 1)    # create_event: list_events doesn't cover it
+        self.assertEqual(a["status"].get("builtin"), 1)      # Skill(report) doesn't cover "reporter"; with no record
+                                                             # of a rule, a harness tool counts as needing none
+
+    def test_recorded_family_picks_approval_over_settings_rule(self):
+        self.settings({"permissions": {"allow": ["mcp__mail__label_thread"]}})
+        self.task("sweep", approved=[{"toolName": "mcp__mail__label_thread"}])
+        self.run_rec("sweep", [("mcp__mail__label_thread", {}, PERM)])
+        self.jit()
+        a = self.ja["sweep"]
+        self.assertEqual([(g["kind"], g["shown"]) for g in a["every"]], [("approval", "mcp__mail__label_thread")])
+        self.assertEqual(a["unused_approvals"], [])
+        self.assertEqual(self.j["totals"]["approvals_used"], 1)
+        self.assertEqual(self.j["totals"]["check"]["agree"], 1)
+
+    def test_unused_approvals_are_listed(self):
+        self.task("sweep", approved=[{"toolName": "mcp__mail__label_thread"}, {"toolName": "mcp__mail__trash_thread"}])
+        self.run_rec("sweep", [("mcp__mail__label_thread", {}, PERM)])
+        self.jit()
+        self.assertEqual(self.shown(self.ja["sweep"]["unused_approvals"]), ["mcp__mail__trash_thread"])
+
+    def test_grant_made_inside_a_run_covers_its_call(self):
+        self.task("j", cwd=os.path.join(self.home, "proj"))
+        tmp = "/opt/extra"
+        self.run_rec("j", [("Read", {"file_path": tmp + "/a.txt"}, None)], cwd=os.path.join(self.home, "proj"),
+                     grants=[{"type": "addDirectories", "directories": [tmp], "destination": "session"}])
+        self.jit()
+        self.assertEqual(self.ja["j"]["status"], {"this_run": 1})
+
+    def test_secrets_in_calls_and_session_records_never_come_out(self):
+        self.settings({"permissions": {"allow": ["Bash(curl *)"]}})
+        self.task("garden")
+        self.run_rec("garden", [("Bash", {"command": "curl -s 'https://api.example.com/rain?application_key=%s'" % FAKE},
+                                 RULE)],
+                     reasons=["Bash\x00This command requires approval\x00command:curl -H 'Authorization: Bot %s'" % FAKE])
+        self.jit()
+        page = ar.render_html(self.report, self.pol, self.result)
+        blob = page + json.dumps({"report": self.report, "result": self.result}, default=str)
+        self.assertNotIn(FAKE, blob)
+        self.assertNotIn(FAKE[:16], blob)
+        self.assertEqual(self.ja["garden"]["secret_calls"], 1)
+        self.assertEqual(len(self.j["secrets"]), 1)
+        self.assertGreaterEqual(self.j["secrets"][0]["length"], len(FAKE))
+
+    def test_long_filenames_are_not_secrets_in_calls(self):
+        self.task("jobs")
+        self.run_rec("jobs", [("Write", {"file_path": os.path.join(self.home, "tailored/Senior_Support_Engineer_Acme2026Q4x9.md")}),
+                              ("WebFetch", {"url": "https://jobs.example.com/r/8f3a9b2c7d1e4f5a6b7c8d9e0f1a2b3c4d5e"})])
+        self.jit()
+        self.assertEqual(self.ja["jobs"]["secret_calls"], 0)
+
+    def test_no_runs_flag_skips_the_pass(self):
+        self.task("nag")
+        self.run_register()
+        path = write(os.path.join(self.home, "cfg.json"), json.dumps(self.cfg))
+        cfg, env = ar.load_config(path)
+        report, _, _, _ = ar.run(cfg, env, runs=False)
+        self.assertNotIn("jit", report)
+
+    def test_page_has_the_section_and_an_observed_store_column(self):
+        self.settings({"permissions": {"allow": ["Bash(python3 ~/bin/discord_send.py *)"]}})
+        self.task("nag")
+        for _ in range(3):
+            self.run_rec("nag", [("Bash", {"command": "python3 ~/bin/discord_send.py p.json"}, RULE)])
+        self.jit()
+        self.assertEqual([x["key"] for x in self.ja["nag"]["reach"] if x["key"].startswith("cred:")], ["cred:discord-bot"])
+        page = ar.render_html(self.report, self.pol, self.result)
+        self.assertIn("id='jit'", page)
+        self.assertIn("Runs that used it (observed)", page)
+        self.assertIn("nag 3/3", page)
+
+
+class JitMatcherTests(unittest.TestCase):
+    def test_bash_rule_shapes(self):
+        rx = jit_pass.bash_rule_rx
+        self.assertTrue(rx("ls *").match("ls"))
+        self.assertTrue(rx("ls *").match("ls -la /tmp"))
+        self.assertFalse(rx("ls *").match("lsof"))
+        self.assertTrue(rx("ls*").match("lsof"))
+        self.assertTrue(rx("git:*").match("git status"))
+        self.assertFalse(rx("git:*").match("gitk"))
+        self.assertTrue(rx("curl -s https://ntfy.sh/*").match("curl -s https://ntfy.sh/topic"))
+        self.assertTrue(rx("date").match("date"))
+        self.assertFalse(rx("date").match("date +%s"))
+
+    def test_pieces_strip_wrappers_env_and_heredocs(self):
+        p = jit_pass.bash_pieces
+        self.assertEqual(p("timeout 30 python3 x.py"), ["python3 x.py"])
+        self.assertEqual(p("nohup nice -n 5 python3 x.py &"), ["python3 x.py"])
+        self.assertEqual(p("FOO=1 BAR='a b' python3 x.py"), ["python3 x.py"])
+        self.assertEqual(p("xargs -n1 rm"), ["xargs -n1 rm"])     # xargs with flags isn't stripped
+        self.assertEqual(p("cat > f <<'EOF'\nrm -rf /\nEOF\npython3 y.py"), ["cat > f <<'EOF'", "python3 y.py"])
+        self.assertEqual(p("# a comment\nls"), ["ls"])
+
+    def test_read_only_builtins(self):
+        ro = jit_pass.read_only_builtin
+        for cmd in ("ls -la", "cd ~/x", "git -C ~/r status", "git log --oneline", "find . -name '*.py'", "wc -l f"):
+            self.assertTrue(ro(cmd), cmd)
+        for cmd in ("git push", "git -C ~/r commit -m x", "find . -delete", "find . -exec rm {} ;", "rm x", "sed -i s/a/b/ f"):
+            self.assertFalse(ro(cmd), cmd)
+
+
 class RepoTests(unittest.TestCase):
     def test_policy_markdown_matches_its_json(self):
         policy, why = ar.load_policy(os.path.join(REPO, "policy", "acceptable-use.json"))
@@ -875,6 +1200,15 @@ class RepoTests(unittest.TestCase):
                             for f in result["config_forbidden"]))
         self.assertEqual(len(report["facts"]["secret_literal"]), 2)
         self.assertIn("<link rel='icon'", page)
+        # the just-in-time pass over the demo's thirty days of runs
+        jit = {a["id"]: a for a in report["jit"]["agents"]}
+        self.assertEqual([g["shown"] for g in jit["inbox-junk-sweep"]["unused_approvals"]], ["mcp__mail__trash_thread"])
+        some = {g["shown"]: g["runs"] for g in jit["daily-job-pipeline"]["some"]}
+        self.assertEqual(some, {"mcp__mail__create_draft": 7, "Bash(git push origin main)": 1})
+        self.assertEqual([g["shown"] for g in jit["habit-nagger"]["every"]], ["Bash(python3 *)"])
+        self.assertEqual(jit["daily-garden-check"]["secret_calls"], 30)
+        self.assertEqual(report["jit"]["totals"]["runs_missing"], 1)
+        self.assertIn("id='jit'", page)
 
 
 if __name__ == "__main__":

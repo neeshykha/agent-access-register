@@ -12,6 +12,11 @@ Every capability carries one of two labels:
     inferred   it was read out of free text: the task's SKILL.md, or a script
                that SKILL.md tells the agent to run (one hop, no further)
 
+When the config names a source of run records, a just-in-time pass
+(jit_pass.py) adds a third, observed: what each agent's runs actually used,
+read from their transcripts, sorted into grants every run uses and grants only
+some runs use.
+
 Three rules hold everywhere below:
 
     1. Unknown stays unknown. An unreadable file is never an empty one, and
@@ -24,6 +29,7 @@ Three rules hold everywhere below:
 Usage:
     access_register.py --config register.config.json            write the page named in config
     access_register.py --config ... --out page.html --json r.json
+    access_register.py --config ... --no-runs                  skip the just-in-time pass
     access_register.py --render-policy policy/acceptable-use.json   rewrite the .md beside it
 
 Exit codes: 0 nothing config allows that policy forbids; 1 at least one such
@@ -63,6 +69,8 @@ DEFAULT_CONFIG = {
                         "sftp": "ssh-keys"},
     "title": "Agent access register",
     "out": None,
+    # run records for the just-in-time pass: {"sessions": glob, "transcripts_root": dir, "window_days": 30}
+    "runs": None,
 }
 
 # Scripts bigger than this aren't scanned; the hop is reported as unread instead.
@@ -125,6 +133,10 @@ def load_config(path):
         cfg[key] = res(cfg[key])
     for store in cfg["credential_stores"]:
         store["path"] = res(store["path"])
+    if cfg.get("runs"):
+        for key in ("sessions", "transcripts_root"):
+            if cfg["runs"].get(key):
+                cfg["runs"][key] = res(cfg["runs"][key])
     return cfg, env
 
 
@@ -1613,8 +1625,12 @@ def cannot_see(report):
                    "the allowlist is a floor, not a ceiling." % modes["auto"])
     if modes.get("unset"):
         out.append("Which mode %d agent(s) with no mode in the registry actually start in." % modes["unset"])
+    jit = report.get("jit")
     out += [
-        "What any agent has actually done. This is configured access read from files, not observed behavior.",
+        ("What agents did beyond the tool calls in their run transcripts. The just-in-time pass reads those "
+         "calls; it can't see inside a script a call runs, or any run outside its window."
+         if jit and not jit.get("errors") else
+         "What any agent has actually done. This is configured access read from files, not observed behavior."),
         "Which MCP servers and connectors are attached when a scheduled run starts. Tool names in rules "
         "and instructions are read; whether the tool is there at run time is not.",
         "Managed settings, command-line flags, and plugin or mod permission hooks.",
@@ -1666,6 +1682,7 @@ p{margin:8px 0}.sub{color:var(--muted);margin:0 0 18px}
 .t-declared{color:var(--dec);background:var(--dec-bg)}.t-inferred{color:var(--inf);background:var(--inf-bg)}
 .t-on{color:var(--ok);background:var(--ok-bg)}.t-off{color:var(--nd);background:var(--nd-bg)}
 .t-warn{color:var(--warn);background:var(--warn-bg)}
+.t-observed{color:var(--ok);background:var(--ok-bg)}
 .tablewrap{overflow-x:auto;background:var(--card);border:1px solid var(--line);border-radius:10px}
 table{border-collapse:collapse;width:100%;min-width:900px}
 th,td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--line);vertical-align:top;font-size:13.5px}
@@ -1677,6 +1694,7 @@ code,.k{font:12.5px ui-monospace,Menlo,monospace;overflow-wrap:anywhere}
 details{margin-top:4px}summary{cursor:pointer;color:var(--muted);font-size:12.5px}
 ul.plain{margin:6px 0 0;padding-left:20px}ul.plain li{margin:4px 0}
 footer{margin-top:36px;color:var(--muted);font-size:13px}
+a{color:var(--dec)}
 """
 
 _FAVICON = ("<link rel='icon' href=\"data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' "
@@ -1774,6 +1792,14 @@ def render_html(report, policy, result, note=None):
                _e(policy.get("title", "untitled")), _e(policy.get("status", "no status")))]
     if note:
         out.append("<div class='banner'>%s</div>" % note)
+    jit = report.get("jit")
+    if jit and not jit.get("errors"):
+        t = jit["totals"]
+        out.append("<div class='banner'><b>Just-in-time pass.</b> %s runs read over %d days: %s of %s shared allow "
+                   "rules covered any call, and %s covered a call in every run of some agent. "
+                   "<a href='#jit'>Per agent below.</a></div>" % (
+                       "{:,}".format(t["runs_read"]), jit["window_days"], "{:,}".format(t["shared_rules_used"]),
+                       "{:,}".format(t["shared_rules"]), "{:,}".format(t["shared_rules_every"])))
     if report["errors"]:
         out.append("<div class='banner bad'><b>This register is incomplete.</b> Something it needed couldn't "
                    "be read, so a blank below may mean unread, not none.<ul class='plain'>%s</ul></div>"
@@ -1859,13 +1885,22 @@ def render_html(report, policy, result, note=None):
         out.append("<h2>Credential stores</h2><p class='muted small'>Existence and the rules that reach each "
                    "one. No store is opened.</p><div class='tablewrap'><table><thead><tr><th>Store</th>"
                    "<th>Path</th><th>Agents that reach it (declared)</th><th>Agents that use it (inferred)</th>"
-                   "<th>Deny rule</th></tr></thead><tbody>")
+                   "%s<th>Deny rule</th></tr></thead><tbody>" % (
+                       "<th>Runs that used it (observed)</th>" if jit and not jit.get("errors") else ""))
         for st in report["stores"]:
             reach = [a["id"] for a in agents if any(c["id"] == st["id"] for c in a["cred_reach"])]
             use = [a["id"] for a in agents if any(c["key"] == "cred:%s" % st["id"] for c in a["inferred"])]
+            observed = None
+            if jit and not jit.get("errors"):
+                hits = []
+                for ja in jit["agents"]:
+                    n = next((x["runs"] for x in ja["reach"] if x["key"] == "cred:%s" % st["id"]), 0)
+                    if n:
+                        hits.append("%s %d/%d" % (ja["id"], n, ja["runs"]))
+                observed = _e(", ".join(hits)) if hits else "<span class='muted'>none seen</span>"
             if not st["exists"]:
-                out.append("<tr><td><b>%s</b></td><td><code>%s</code></td><td colspan='3' class='muted'>not on "
-                           "disk</td></tr>" % (_e(st["label"]), _e(st["path"])))
+                out.append("<tr><td><b>%s</b></td><td><code>%s</code></td><td colspan='%d' class='muted'>not on "
+                           "disk</td></tr>" % (_e(st["label"]), _e(st["path"]), 4 if observed is not None else 3))
                 continue
 
             def names(ids):
@@ -1875,8 +1910,9 @@ def render_html(report, policy, result, note=None):
                     return "%d of %d <details><summary>which</summary>%s</details>" % (
                         len(ids), len(agents), _e(", ".join(ids)))
                 return _e(", ".join(ids))
-            out.append("<tr><td><b>%s</b></td><td><code>%s</code></td><td>%s</td><td>%s</td><td>%s</td></tr>" % (
+            out.append("<tr><td><b>%s</b></td><td><code>%s</code></td><td>%s</td><td>%s</td>%s<td>%s</td></tr>" % (
                 _e(st["label"]), _e(st["path"]), names(reach), names(use),
+                "<td class='small'>%s</td>" % observed if observed is not None else "",
                 _e("; ".join(d["rule"] for d in st["denied_by"])) or "<span class='tag t-warn'>none</span>"))
         out.append("</tbody></table></div>")
 
@@ -1930,6 +1966,10 @@ def render_html(report, policy, result, note=None):
             "".join(extra) or "<span class='muted small'>—</span>"))
     out.append("</tbody></table></div>")
 
+    if jit:
+        import jit_pass
+        out += jit_pass.render_section(jit)
+
     out.append("<h2>Where policy is silent</h2>")
     out.append("<p class='muted small'>Access that shows up in config or instructions and that no policy rule "
                "speaks to, for or against. Silence isn't approval; each line is a decision nobody has written down.</p>")
@@ -1973,9 +2013,11 @@ def render_html(report, policy, result, note=None):
         out.append("<tr><td><b>%s</b><br>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>" % (
             _e(r["id"]), _e(r["title"]), _e(r.get("rmf", "")), _e(r["text"]), status))
     out.append("</tbody></table></div>")
-    out.append("<footer>Configured access, not observed behavior. Declared rows come from permission config; "
-               "inferred rows are a text scan and can be wrong. No credential file was opened and no secret "
-               "value appears on this page.</footer></main></body></html>")
+    out.append("<footer>%s Declared rows come from permission config; inferred rows are a text scan and can be "
+               "wrong. No credential file was opened and no secret value appears on this page.</footer>"
+               "</main></body></html>" % (
+                   "Configured access, plus what runs' transcripts show they used." if jit and not jit.get("errors")
+                   else "Configured access, not observed behavior."))
     return "\n".join(out)
 
 
@@ -2004,8 +2046,12 @@ def render_policy_md(policy):
 # main
 # --------------------------------------------------------------------------
 
-def run(cfg, env):
-    """Build the register and diff it. Returns (report, policy, result, exit_code)."""
+def run(cfg, env, runs=True):
+    """Build the register and diff it. Returns (report, policy, result, exit_code).
+
+    With runs=True and a run-record source in config, the just-in-time pass runs
+    too and its result lands in report["jit"].
+    """
     reg = Register(cfg, env)
     report = reg.build()
     for sc in report["scopes"]:
@@ -2025,6 +2071,10 @@ def run(cfg, env):
             if sc and inst["scope"] != "all agents":
                 inst["scope"] = scope_who(sc, len(report["agents"]))
     result = diff(report, policy, cfg.get("exceptions") or {})
+    if runs and (cfg.get("runs") or {}).get("sessions"):
+        import jit_pass
+        report["jit"] = jit_pass.run_pass(report, cfg, env)
+        report["errors"] += ["just-in-time pass: %s" % e for e in report["jit"]["errors"]]
     report["cannot_see"] = cannot_see(report)
     if report["errors"]:
         code = 2
@@ -2041,6 +2091,7 @@ def main(argv=None):
     ap.add_argument("--out")
     ap.add_argument("--json")
     ap.add_argument("--render-policy", metavar="POLICY_JSON")
+    ap.add_argument("--no-runs", action="store_true", help="skip the just-in-time pass over run transcripts")
     args = ap.parse_args(argv)
 
     if args.render_policy:
@@ -2059,7 +2110,7 @@ def main(argv=None):
     except (OSError, ValueError) as e:
         print("config can't be read: %s" % e, file=sys.stderr)
         return 2
-    report, policy, result, code = run(cfg, env)
+    report, policy, result, code = run(cfg, env, runs=not args.no_runs)
     out = args.out or cfg.get("out")
     if out:
         out = os.path.expanduser(out)
@@ -2072,6 +2123,12 @@ def main(argv=None):
     live_if = [f for f in result["instructed_forbidden"] if not f["excused"]]
     print("%d agents · config allows/policy forbids: %d · instructed/policy forbids: %d · policy silent: %d kinds"
           % (len(report["agents"]), len(live_cf), len(live_if), len(result["silent"])))
+    jit = report.get("jit")
+    if jit and not jit["errors"]:
+        t = jit["totals"]
+        print("just-in-time pass: %d runs · shared rules used %d of %d (every run of some agent: %d) · "
+              "task approvals used %d of %d" % (t["runs_read"], t["shared_rules_used"], t["shared_rules"],
+                                                 t["shared_rules_every"], t["approvals_used"], t["approvals"]))
     for e in report["errors"]:
         print("INCOMPLETE: %s" % e)
     if out:
@@ -2080,4 +2137,5 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
+    sys.modules.setdefault("access_register", sys.modules[__name__])   # so jit_pass imports this module, not a copy
     sys.exit(main())

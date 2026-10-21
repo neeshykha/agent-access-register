@@ -2,7 +2,8 @@
 """Build a synthetic fleet on disk, run the register against it, render docs/index.html.
 
 Everything is a real file in a throwaway home folder: settings files, a scheduler
-registry, task folders, helper scripts, and empty stand-ins for credential stores.
+registry, task folders, helper scripts, empty stand-ins for credential stores, and
+thirty days of run records with the transcripts the just-in-time pass reads.
 The page a reviewer sees is the register's actual output against those files, not
 a mockup. Every "secret" below is an obviously fake string, planted so the page
 can show that it reports where one sits without printing it.
@@ -12,9 +13,11 @@ can show that it reports where one sits without printing it.
 
 import json
 import os
+import re
 import shutil
 import sys
 import tempfile
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
@@ -47,6 +50,94 @@ def row(home, tid, cron, mode="auto", cwd=None, enabled=True, approved=None):
     if approved:
         r["approvedPermissions"] = approved
     return r
+
+
+RULE = {"decision": "accept", "source": "config", "reasonType": "rule"}
+PERM = {"decision": "accept", "source": "user_permanent", "reasonType": "rule"}
+MODE = {"decision": "accept", "source": "config", "reasonType": "mode"}
+CLASSIFIER = {"decision": "accept", "source": "config", "reasonType": "classifier"}
+TEMP = {"decision": "accept", "source": "user_temporary"}
+HOOK = {"decision": "reject", "source": "hook", "reasonType": "hook"}
+
+
+def lay_runs(home, jobs, site):
+    """Thirty days of scheduled runs: one session record per run, and the transcript it points at.
+
+    Each call carries the permission decision Claude Code records, so the pass
+    has the same evidence it gets on a real fleet.
+    """
+    now = time.time() * 1000
+    n = [0]
+
+    def run(tid, calls, days_ago, cwd=None, transcript=True, grants=None):
+        n[0] += 1
+        sid = "d3m0%04d-0000-4000-8000-000000000000" % n[0]
+        cwd = cwd or home
+        rec = {"sessionId": "local_demo%d" % n[0], "cliSessionId": sid, "cwd": cwd, "permissionMode": "auto",
+               "createdAt": now - days_ago * 86400000 - 3600000, "scheduledTaskId": tid}
+        if grants:
+            rec["sessionPermissionUpdates"] = grants
+        write(os.path.join(home, "sessions", "local_demo%d.json" % n[0]), json.dumps(rec))
+        if not transcript:
+            return
+        lines = []
+        for i, c in enumerate(calls):
+            tu = "toolu_demo_%d_%d" % (n[0], i)
+            lines.append({"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "id": tu, "name": c[0], "input": c[1]}]}})
+            err = c[3] if len(c) > 3 else None
+            u = {"type": "user", "message": {"content": [
+                {"type": "tool_result", "tool_use_id": tu, "content": err or "ok", "is_error": bool(err)}]}}
+            if c[2]:
+                u["permissionDecision"] = c[2]
+            lines.append(u)
+        write(os.path.join(home, ".claude", "projects", re.sub(r"[^A-Za-z0-9]", "-", cwd), sid + ".jsonl"),
+              "\n".join(json.dumps(x) for x in lines) + "\n")
+
+    h = home
+    for d in range(30):
+        # the nagger runs one script, every time, on a wildcard interpreter rule
+        run("habit-nagger", [("Bash", {"command": "python3 ~/bin/habit_nag.py"}, RULE)], d)
+        # the sweep labels every run and never trashes, though it's approved to
+        sweep = [("mcp__mail__search_threads", {"query": "label:inbox"}, RULE),
+                 ("mcp__mail__label_thread", {"thread_id": "t%d" % d}, PERM),
+                 ("Edit", {"file_path": h + "/Trackers/inbox/state.md"}, RULE)]
+        run("inbox-junk-sweep", sweep, d)
+        # rain: the key rides on the command line, and nothing in config covers that host
+        run("daily-garden-check", [
+            ("Bash", {"command": "curl -s \"https://api.weather.example.com/v1/rain?application_key=%s\"" % FAKE_WEATHER_KEY},
+             CLASSIFIER),
+            ("Bash", {"command": "python3 ~/bin/rain_rollup.py"}, RULE),
+            ("Edit", {"file_path": h + "/Trackers/garden/log.csv"}, RULE)], d)
+        if d % 7 < 5:
+            brief = [("mcp__calendar__list_events", {}, PERM),
+                     ("Edit", {"file_path": h + "/Downloads/morning-brief.html"}, PERM),
+                     ("Bash", {"command": "python3 ~/bin/ntfy_send.py payload.json"}, RULE)]
+            run("morning-brief", brief, d)
+            pipe = [("Bash", {"command": ".venv/bin/python pipeline/run.py"}, RULE),
+                    ("Edit", {"file_path": jobs + "/pipeline/logs/run.jsonl"}, MODE)]
+            if d % 3 == 0:
+                pipe.append(("mcp__mail__create_draft", {"to": "hiring@example.com"}, PERM))
+            if d == 4:
+                pipe.append(("Bash", {"command": "git push origin main"}, PERM))
+            run("daily-job-pipeline", pipe, d, cwd=jobs)
+        run("escalated-case-digest", [
+            ("Bash", {"command": "sf data query --query \"SELECT Id, Subject FROM Case WHERE Status = 'Escalated'\" --json"}, RULE),
+            ("mcp__slack__slack_send_message", {"channel": "D123"}, CLASSIFIER)], d)
+    for d in (1, 8, 15, 22):
+        review = [("Read", {"file_path": h + "/Trackers/fleet/report-%d.md" % d}, None),
+                  ("Bash", {"command": "python3 ~/bin/discord_send.py payload.json"}, RULE)]
+        if d == 15:
+            review.append(("Bash", {"command": "curl -s -X POST https://discord.com/api/v10/channels/1/messages -d @p.json"},
+                           HOOK, "PreToolUse:Bash hook error: Blocked by project policy"))
+        run("weekly-fleet-review", review, d)
+    for d in (0, 7, 14, 21):
+        run("ship-weekly", [("Bash", {"command": "~/projects/site/bin/publish.sh"}, CLASSIFIER),
+                            ("Read", {"file_path": site + "/build/index.html"}, None)], d, cwd=site)
+    # one run whose transcript was cleaned up, and one that got a folder granted for that run only
+    run("weekly-fleet-review", [], 29, transcript=False)
+    run("pickup-reminder", [("Read", {"file_path": "/opt/shared/pickup.txt"}, TEMP)], 3,
+        grants=[{"type": "addDirectories", "directories": ["/opt/shared"], "destination": "session"}])
 
 
 def build(home):
@@ -170,6 +261,7 @@ def build(home):
     skill(home, "shelf-audit", "Count the shelf and write ~/Trackers/shelf/count.md.\n")
 
     write(os.path.join(home, "registry.json"), json.dumps({"scheduledTasks": rows}, indent=2))
+    lay_runs(home, jobs, site)
 
     cfg = {
         "home": home,
@@ -192,6 +284,8 @@ def build(home):
             {"match": "discord_send.py", "channel": "discord", "credential": "discord-bot"},
             {"match": "ntfy_send.py", "channel": "ntfy"},
         ],
+        "runs": {"sessions": "~/sessions/*.json", "transcripts_root": "~/.claude/projects", "window_days": 30,
+                 "min_runs": 3},
         "exceptions": {"AUP-11": [{"agent": "ship-weekly", "keys": ["publish:*"],
                                    "reason": "publishes the portfolio site on Sundays; owner approved 2026-09-14"}]},
     }
@@ -204,8 +298,8 @@ def main():
     try:
         cfg, env = ar.load_config(build(home))
         report, policy, result, code = ar.run(cfg, env)
-        note = ("<b>Demo fleet.</b> Synthetic agents, settings, and scripts built on disk by "
-                "<code>demo/build_demo.py</code>. Every row is the register's real output against those "
+        note = ("<b>Demo fleet.</b> Synthetic agents, settings, scripts, and thirty days of run transcripts, built "
+                "on disk by <code>demo/build_demo.py</code>. Every row is the register's real output against those "
                 "files. The two planted secrets are fake; the page shows where they sit and never what they say.")
         page = ar.render_html(report, policy, result, note=note)
         for leak in (home, FAKE_BOT_TOKEN, FAKE_WEATHER_KEY):
