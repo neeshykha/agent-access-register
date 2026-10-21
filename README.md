@@ -30,17 +30,17 @@ The register says what each agent may touch. The pass says what its runs touched
 
 A grant every run used is one the agent needs each time. A grant only some runs used could be issued to the run that needs it and revoked when that run ends. Everything else is standing access nothing used.
 
-Since late September, Claude Code has written down what kind of thing allowed each call: a settings rule, a saved approval, the auto-mode classifier, or the permission mode. It doesn't say which rule. The pass uses that record to pick the kind of grant, credits the narrowest one of that kind, and checks itself against the record. On my fleet the matcher found a current rule of the recorded kind for 6,689 of the 6,696 calls Claude Code says a rule allowed. The other seven match no rule that exists today.
+Since late September, Claude Code has written down what kind of thing allowed each call: a settings rule, a saved approval, the auto-mode classifier, or the permission mode. It doesn't say which rule. The pass uses that record to pick the kind of grant, credits the narrowest one of that kind, and checks itself against the record. On my fleet the matcher found a current rule of the recorded kind for 6,689 of the 6,696 calls Claude Code says a rule allowed. The other seven match no rule that exists today. The catch: only 9,201 of the month's 27,859 calls carry that record at all, since many runs were on older CLI versions. For the other two-thirds, the matcher works alone.
 
 ### What it found on my fleet (October 21, 2026)
 
 1,030 runs of 44 agents between September 21 and October 21, and 27,859 tool calls. The 41 agents with at least three runs get sorted into every-run and some-run grants; three with only one or two runs are listed but not sorted.
 
 1. **Each agent holds about 1,200 standing permissions and uses about ten.** The median agent runs under 1,186 shared allow rules. Its runs used 2 grants every time and 8 more some of the time. All 1,186 are live around the clock, for jobs that run a few minutes a day.
-2. **212 of the 1,625 shared rules covered any call in 30 days, and 41 covered a call in every run of some agent.** The other 1,413 covered nothing a scheduled run did. The same files govern my interactive sessions, so unused here means unused by the fleet, not safe to delete.
-3. **Saved approvals are mostly leftovers.** The scheduler registry holds 472, and runs used 72. daily-job-pipeline has 136 and used 6. friday-portfolio-ideas used 1 of 93. habit-nagger holds 36 and used none: all 383 of its runs went through one shared rule.
-4. **One wildcard rule carries most of the fleet.** `Bash(python3 ~/PhoneLog/bin/*)` covered calls for 25 agents across 877 runs. That folder holds 45 scripts; the fleet ran 19 of them, and the median agent ran 2. A per-run grant naming those two scripts does the same job as a standing grant over all 45.
-5. **The home folder is the biggest grant, and runs use a sliver of it.** 38 agents run from `~`, where reads need no approval. 34 of them read through that grant, and the median one touched two folders. The widest, daily-followups, touched 11.
+2. **215 of the 1,625 shared rules covered any call in 30 days, and 44 covered a call in every run of some agent.** The other 1,410 covered nothing a scheduled run did. The same files govern my interactive sessions, so unused here means unused by the fleet, not safe to delete.
+3. **Saved approvals are mostly leftovers.** The scheduler registry holds 472, and runs used 72. daily-job-pipeline has 136 and used 7. friday-portfolio-ideas used 1 of 93. habit-nagger holds 36 and used none: all 383 of its runs went through one shared rule.
+4. **One wildcard rule carries most of the fleet.** The rule that lets `python3` run anything in `~/PhoneLog/bin` covered calls for 25 agents across 877 runs. That folder holds 45 scripts; the fleet ran 19 of them, and the median agent ran 2. A per-run grant naming those two scripts does the same job as a standing grant over all 45.
+5. **The home folder is the biggest grant, and runs use a sliver of it.** 42 of the 45 agents run from `~`, where reads need no approval. 35 of them read through that grant in the window, and the median one touched two folders. The widest, daily-followups, touched 11.
 6. **Some of the fleet already runs just-in-time.** 1,443 calls ran on the auto-mode classifier approving that one call, and 42 on a grant made inside the run that ended with it. 165 calls were blocked, 117 of them by the shell hook. What never expires is the allowlist.
 7. **One agent passes an API key on the command line.** daily-garden-check-v2 put a value shaped like its weather station's API key into a request URL in four calls, so it now sits in those runs' transcripts on disk. The page reports that by shape and length. It doesn't print the value or test it.
 
@@ -62,7 +62,7 @@ Credential stores are checked for existence, for which rules reach them, and for
 
 ## Three rules the code holds to
 
-- **Unknown stays unknown.** An unreadable settings file is not an empty one. A missing `SKILL.md` is not a clean agent. A registry in a shape the tool doesn't recognize is not a fleet of zero. Each of those exits 2 and puts a banner on the page. The pass follows suit: no run records at all exits 2, and a run whose transcript is gone counts as unknown, never as a run that used nothing.
+- **Unknown stays unknown.** An unreadable settings file is not an empty one. A missing `SKILL.md` is not a clean agent. A registry in a shape the tool doesn't recognize is not a fleet of zero. Each of those exits 2 and puts a banner on the page. The pass follows suit: no run records at all, or no transcript for any run, exits 2, and a run whose transcript is gone counts as unknown, never as a run that used nothing.
 - **A warning is not the offense.** "Do not post to Slack" is recorded as a prohibition the instructions make, shown on the row, and not counted as a Slack capability. The reverse mistake is worse, so "don't forget to post to Discord" and "never end the run without posting" both count as instructions.
 - **No secret value is printed.** Secret-shaped strings are reported by file, line, and length. Rule text is masked before it's shown anywhere, including in capability keys and the JSON output.
 
@@ -118,7 +118,7 @@ The config names your settings files, the registry (a path or a glob; the newest
 python3 tests/test_register.py
 ```
 
-108 tests, all against real files in a throwaway home folder, run records and transcripts included. Most of what's under test is how the register reads files it can't fully trust, and mocking the filesystem would only test the mock.
+115 tests, all against real files in a throwaway home folder, run records and transcripts included. Most of what's under test is how the register reads files it can't fully trust, and mocking the filesystem would only test the mock.
 
 ## What a second model's review caught
 
@@ -134,10 +134,12 @@ Each has a test now. Then the live run found one the review hadn't: a saved appr
 
 The masking and negation logic passed their first tests and were wrong. A check that has only been run against the cases its author thought of isn't verified.
 
+The just-in-time pass got the same review before release, and it found six defects. Two would have shipped in this README. The headline count of rules every run used was 41 instead of 44, because the page merges the same rule text from two settings files into one line and the total was counted after the merge. And a token in a URL's `user:password@` prefix would have reached the page through the list of what a rule covered; no run in the window had one, so nothing leaked. The others: a rule got credit when Claude Code's record said the permission mode allowed the call, `cat > file` counted as a read-only command, one malformed transcript line could crash the run, and a wrong transcript folder reported "nothing used" instead of exiting 2. Each has a test now.
+
 ## Honest limits
 
 - **Most of it reports configured access.** Only the just-in-time pass looks at behavior, and only at the tool calls a transcript records.
-- **The decision record is undocumented.** Claude Code calls its transcript format internal and liable to change. The pass reads the `permissionDecision` field as it appears in CLI versions 2.1.293 to 2.1.299, and falls back to its own matcher for older runs and calls without one.
+- **The decision record is undocumented.** Claude Code calls its transcript format internal and liable to change. The pass reads the `permissionDecision` field as it appears in CLI versions 2.1.293 to 2.1.299, and falls back to its own matcher for older runs and calls without one, which on my fleet was two-thirds of them.
 - **The credit is a choice.** Claude Code takes the first allow rule that matches and doesn't record which. The pass credits the narrowest rule that covers the call, and credits both when two equivalent rules tie (`Bash(python3 *)` and `Bash(python3:*)`).
 - **A script is one call.** `python3 send.py` shows up once. The files and hosts inside the script don't.
 - **Thirty days is a sample.** A grant a quarterly job needs looks unused in a month, and nothing here says a grant can go without breaking a run on a day the window missed.

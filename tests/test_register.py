@@ -1124,6 +1124,71 @@ class JitTests(JitCase):
         self.assertIn("nag 3/3", page)
 
 
+class JitReviewTests(JitCase):
+    """Defects a second model's review found in the first version of the pass."""
+
+    def test_every_run_total_counts_duplicate_rules_in_two_files(self):
+        self.settings({"permissions": {"allow": ["Bash(python3 ~/bin/send.py *)"]}})
+        self.settings({"permissions": {"allow": ["Bash(python3 ~/bin/send.py *)"]}}, rel=".claude/settings.local.json")
+        self.task("nag")
+        for _ in range(3):
+            self.run_rec("nag", [("Bash", {"command": "python3 ~/bin/send.py x"}, RULE)])
+        self.jit()
+        self.assertEqual(len(self.ja["nag"]["every"]), 1)              # shown once, naming both files
+        self.assertEqual(len(self.ja["nag"]["every"][0]["files"]), 2)
+        self.assertEqual(self.j["totals"]["shared_rules_every"], 2)     # but both grants count
+
+    def test_token_in_url_userinfo_never_reaches_output(self):
+        self.settings({"permissions": {"allow": ["WebFetch", "WebFetch(domain:api.example.com)"]}})
+        self.task("web")
+        self.run_rec("web", [("WebFetch", {"url": "https://user:%s@api.example.com/x" % FAKE})])
+        self.jit()
+        blob = ar.render_html(self.report, self.pol, self.result) + json.dumps(self.report, default=str)
+        self.assertNotIn(FAKE[:16], blob)
+        # and the host is the host: the domain rule covers it
+        self.assertEqual(self.shown(self.ja["web"]["every"]), ["WebFetch(domain:api.example.com)"])
+
+    def test_mode_decision_credits_no_rule(self):
+        self.settings({"permissions": {"allow": ["Edit(~/.claude/agent-memory/**)"]}})
+        self.task("coach")
+        self.run_rec("coach", [("Edit", {"file_path": os.path.join(self.home, ".claude/agent-memory/MEMORY.md")},
+                                {"decision": "accept", "source": "config", "reasonType": "other"})])
+        self.jit()
+        self.assertEqual(self.ja["coach"]["every"] + self.ja["coach"]["some"], [])
+        self.assertEqual(self.ja["coach"]["status"], {"builtin": 1})
+
+    def test_redirect_makes_a_read_only_command_a_write(self):
+        ro = jit_pass.read_only_builtin
+        self.assertFalse(ro("cat > notes.md"))
+        self.assertFalse(ro("echo x >> ~/.env"))
+        self.assertTrue(ro("grep -c x f 2>/dev/null"))
+        self.assertTrue(ro("ls 2>&1"))
+
+    def test_non_object_json_line_is_unknown_not_a_crash(self):
+        self.task("nag")
+        sid = self.run_rec("nag", [("Bash", {"command": "date"}, RULE)])
+        path = os.path.join(self.home, ".claude", "projects", re.sub(r"[^A-Za-z0-9]", "-", self.home), sid + ".jsonl")
+        with open(path, "a") as fh:
+            fh.write('["tool_use", "not an object"]\n')
+        self.jit()
+        self.assertTrue(any("couldn't be parsed" in u for u in self.j["unknowns"]))
+
+    def test_wrong_transcript_folder_is_exit_2(self):
+        self.task("nag")
+        self.run_rec("nag", [], transcript=False)
+        self.run_rec("nag", [], transcript=False)
+        self.jit()
+        self.assertEqual(self.code, 2)
+        self.assertTrue(any("left a transcript" in e for e in self.report["errors"]))
+
+    def test_record_coverage_is_counted(self):
+        self.settings({"permissions": {"allow": ["Bash(date)"]}})
+        self.task("nag")
+        self.run_rec("nag", [("Bash", {"command": "date"}, RULE), ("Bash", {"command": "date"})])
+        self.jit()
+        self.assertEqual((self.j["totals"]["calls_recorded"], self.j["totals"]["calls"]), (1, 2))
+
+
 class JitMatcherTests(unittest.TestCase):
     def test_bash_rule_shapes(self):
         rx = jit_pass.bash_rule_rx

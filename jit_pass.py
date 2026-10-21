@@ -30,6 +30,7 @@ import os
 import re
 import time
 from datetime import datetime
+from urllib.parse import urlsplit
 
 import access_register as ar
 from access_register import anchor, mask, parse_rule, pattern_covers, read_json, safe, split_commands
@@ -60,14 +61,13 @@ _APP_TOOL = re.compile(r"^mcp__ccd_", re.I)
 _SCRATCH = re.compile(r"^/(?:private/)?tmp/claude-\d+/")
 _ENV_PREFIX = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=(?:'[^']*'|\"[^\"]*\"|\S*)\s+")
 _HEREDOC = re.compile(r"<<-?\s*['\"]?([A-Za-z_][A-Za-z0-9_]*)['\"]?")
-_HOST = re.compile(r"^[a-z][a-z0-9+.\-]*://([^/:?#]+)", re.I)
 
 # Shown when a call was blocked. The decision Claude Code recorded wins; the
 # denial kind and then the message text are fallbacks for older transcripts.
 _DENIED_TEXT = [
     ("hook", re.compile(r"hook error|Blocked by project policy")),
     ("classifier", re.compile(r"auto mode classifier|Auto mode is unavailable")),
-    ("no one to approve", re.compile(r"needs a person's approval|requires approval")),
+    ("no one to approve", re.compile(r"needs a person's approval|^This command requires approval")),
     ("deny rule", re.compile(r"^Permission to use \S+ .*has been denied")),
 ]
 
@@ -161,6 +161,9 @@ def read_calls(paths):
                     e = json.loads(line)
                 except ValueError:
                     bad += 1
+                    continue
+                if not isinstance(e, dict):
+                    bad += 1            # the format is internal and can change; a line we can't read is unknown
                     continue
                 msg = e.get("message")
                 content = msg.get("content") if isinstance(msg, dict) else None
@@ -282,10 +285,16 @@ def bash_pieces(command):
 
 
 def read_only_builtin(cmd):
-    """Is this subcommand one Claude Code runs with no rule at all?"""
+    """Is this subcommand one Claude Code runs with no rule at all?
+
+    Not when it writes: `cat > f` and `echo x >> ~/.env` redirect into a file.
+    """
     toks = cmd.split()
     if not toks:
         return False
+    for m in ar._REDIRECT.finditer(cmd):
+        if not (m.group(1).startswith("/dev/") or m.group(1) in ("&1", "&2")):
+            return False
     head = toks[0]
     if head == "find":
         return not re.search(r"(?:^|\s)-(?:delete|exec|execdir|ok|okdir|fprint\w*)\b", cmd)
@@ -385,8 +394,11 @@ def call_pieces(call, run_cwd):
         path = os.path.normpath(raw if os.path.isabs(raw) else os.path.join(run_cwd or "/", raw))
         return [("read" if name in READ_TOOLS else "edit", path)]
     if name == "WebFetch":
-        m = _HOST.match(inp.get("url", ""))
-        return [("web", m.group(1).lower() if m else "")]
+        try:
+            host = urlsplit(inp.get("url", "")).hostname or ""    # drops any user:token@ in front of the host
+        except ValueError:
+            host = ""
+        return [("web", host.lower())]
     if name.startswith("mcp__"):
         return [("mcp", name)]
     return [("tool", (name, inp.get("skill") or inp.get("subagent_type")))]
@@ -478,7 +490,7 @@ def shape(piece, env):
     if kind in ("read", "edit"):
         return safe(area(arg, env), 90)
     if kind == "web":
-        return arg or None
+        return safe(arg, 90) if arg else None
     return None
 
 
@@ -534,6 +546,9 @@ def attribute(call, grants, mode, temp_grants, run_cwd, seen=None):
                 unmatched += 1
             continue
         pick = [g for g in cands if prefer and family(g) in prefer]
+        if prefer == ("location",) and not pick:
+            builtin += 1              # the record says no rule was consulted, so none gets credit
+            continue
         if prefer and not pick and recorded_rule:
             family_ok = False
         if not pick and prefer is None and p[0] in ("read", "edit"):
@@ -700,7 +715,11 @@ def run_pass(report, cfg, env, now_ms=None):
     if problem:
         out["errors"].append("%s: which permissions runs use is unknown, not none" % problem)
         return out
+    if counts["unreadable"] and counts["unreadable"] == counts["records"]:
+        out["errors"].append("none of the %d session record(s) could be read" % counts["records"])
+        return out
     if counts["unreadable"]:
+        # a record can be mid-write while its session runs, so a few unreadable ones are listed, not fatal
         out["unknowns"].append("%d session record(s) couldn't be read; any runs among them are unknown"
                                % counts["unreadable"])
     if counts["unregistered"]:
@@ -732,9 +751,10 @@ def run_pass(report, cfg, env, now_ms=None):
     for r in runs:
         by_task.setdefault(r["task"], []).append(r)
 
-    totals = {"calls": 0, "runs_read": 0, "runs_missing": 0, "runs_empty": 0, "bad_lines": 0,
+    totals = {"calls": 0, "calls_recorded": 0, "runs_read": 0, "runs_missing": 0, "runs_empty": 0, "bad_lines": 0,
               "status": {}, "denied": {}, "check": {"agree": 0, "family": 0, "missing": 0}}
     shared_use = {}          # grant id -> {"agents": set, "runs": n}
+    every_somewhere = set()  # shared grant ids every run of some sorted agent used
     fleet_shared = set()     # every shared grant id some agent runs under
     approvals_total = approvals_used = 0
 
@@ -786,6 +806,8 @@ def run_pass(report, cfg, env, now_ms=None):
             used_here, reach_here, areas_here, seen_pieces = set(), set(), set(), {}
             for c in calls:
                 totals["calls"] += 1
+                if c.get("decision"):
+                    totals["calls_recorded"] += 1
                 status, credited, check = attribute(c, grants, run["mode"], temp, run_cwd, seen_pieces)
                 row["status"][status] = row["status"].get(status, 0) + 1
                 totals["status"][status] = totals["status"].get(status, 0) + 1
@@ -823,6 +845,9 @@ def run_pass(report, cfg, env, now_ms=None):
         totals["runs_missing"] += row["runs_missing"]
         totals["runs_empty"] += row["runs_empty"]
         out["agents"].append(summarize(row, grants, rcfg["min_runs"], env))
+        if row["runs"] >= rcfg["min_runs"]:
+            # counted from the raw grant ids: the display merges the same rule text from two files into one line
+            every_somewhere.update(gid for gid, used in row["use"].items() if used == row["runs"] and gid.startswith("S:"))
         approvals_used += sum(1 for g in appr if g["id"] in row["use"])
 
     out["totals"] = dict(totals, shared_rules=len({g for g in fleet_shared}), shared_rules_used=len(shared_use),
@@ -830,15 +855,16 @@ def run_pass(report, cfg, env, now_ms=None):
                          since=_date(runs[0]["created"]) if runs else None,
                          until=_date(runs[-1]["created"]) if runs else None,
                          agents_with_runs=sum(1 for x in out["agents"] if x["runs"]))
-    every_somewhere = set()
-    for x in out["agents"]:
-        every_somewhere.update(g["id"] for g in x["every"] if g["id"].startswith("S:"))
     out["totals"]["shared_rules_every"] = len(every_somewhere)
     out["shared_used"] = sorted(({"id": gid, "shown": shared_meta[gid]["shown"], "scope": shared_meta[gid]["scope"],
                                   "agents": sorted(u["agents"]), "runs": u["runs"]}
                                  for gid, u in shared_use.items()),
                                 key=lambda s: (-len(s["agents"]), -s["runs"], s["shown"]))
-    if totals["runs_missing"]:
+    if totals["runs_missing"] and not (totals["runs_read"] or totals["runs_empty"]):
+        # not one transcript for any run: the transcript folder is wrong or gone, not every run idle
+        out["errors"].append("none of the %d run(s) in the window left a transcript under %s"
+                             % (totals["runs_missing"], env.tilde(env.expand(rcfg["transcripts_root"]))))
+    elif totals["runs_missing"]:
         out["unknowns"].append("%d run(s) in the window left no transcript that could be found; they're "
                                "counted as unknown, not as runs that used nothing" % totals["runs_missing"])
     if totals["bad_lines"]:
@@ -1038,7 +1064,10 @@ def render_section(jit, fmt=lambda n: "{:,}".format(n)):
     chk = t["check"]
     recorded = sum(chk.values())
     if recorded:
-        out.append("<p class='small'><b>Matcher check.</b> On %s calls, Claude Code's own record says a standing "
+        out.append("<p class='small'><b>Matcher check.</b> %s of %s calls carry Claude Code's own record of what "
+                   "allowed them; for the rest, attribution is this matcher alone. " % (
+                       fmt(t.get("calls_recorded", 0)), fmt(t["calls"])) +
+                   "On %s calls, Claude Code's own record says a standing "
                    "rule let the call through. The matcher found a current rule of the same kind for %s of them "
                    "(%d%%). For %s it found a rule of the other kind (a task approval where Claude Code named a "
                    "settings rule, or the reverse), and for %s it found none: a rule removed since, or one this "

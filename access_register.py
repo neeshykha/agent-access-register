@@ -133,6 +133,8 @@ def load_config(path):
         cfg[key] = res(cfg[key])
     for store in cfg["credential_stores"]:
         store["path"] = res(store["path"])
+    if cfg.get("runs") is not None and not isinstance(cfg["runs"], dict):
+        raise ValueError("runs must be an object with sessions and transcripts_root")
     if cfg.get("runs"):
         for key in ("sessions", "transcripts_root"):
             if cfg["runs"].get(key):
